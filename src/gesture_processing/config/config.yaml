@@ -1,0 +1,17 @@
+# Параметры обработки
+frame_interval_ms: 200 # Интервал между кадрами (мс) — 200мс для снижения нагрузки
+min_detection_confidence: 0.5 # Порог уверенности детекции
+min_tracking_confidence: 0.5 # Порог уверенности трекинга
+
+# Ограничение количества видео для теста
+max_videos: 5
+
+# Параллелизм
+num_workers: 2
+
+# Пути
+paths:
+  raw_videos: "data/raw_videos"
+  annotations: "data/annotations.csv"
+  output_landmarks: "output/landmarks"
+  output_visuals: "output/visualizations"
