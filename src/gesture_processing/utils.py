@@ -11,3 +11,4 @@ def load_annotations(path: str) -> pd.DataFrame:
 def ensure_dirs(dirs: list):
     for d in dirs:
         os.makedirs(d, exist_ok=True)
+
