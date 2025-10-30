@@ -8,21 +8,33 @@ from .utils import load_annotations, ensure_dirs
 
 
 def _process_video(vid, out, label, cfg):
-    """Извлекает точки из одного видео (выполняется в отдельном процессе)."""
-    from .extractor import GestureLandmarkExtractor
-    extractor = GestureLandmarkExtractor(
-        frame_interval_ms=cfg["frame_interval_ms"],
-        min_detection_confidence=cfg["min_detection_confidence"],
-        min_tracking_confidence=cfg["min_tracking_confidence"]
-    )
-    return extractor.extract(vid, out, label)
+    """
+    Выполняется в дочернем процессе.
+    Создаёт собственный GestureLandmarkExtractor, чтобы избежать pickle проблем
+    и уменьшить sharing-ресурсов между процессами.
+    """
+    try:
+        from .extractor import GestureLandmarkExtractor
+    except Exception as e:
+        print(f"[ERROR worker import] {e}")
+        return None
+
+    try:
+        extractor = GestureLandmarkExtractor(
+            frame_interval_ms=cfg.get("frame_interval_ms", 100),
+            min_detection_confidence=cfg.get("min_detection_confidence", 0.5),
+            min_tracking_confidence=cfg.get("min_tracking_confidence", 0.5)
+        )
+        return extractor.extract(vid, out, label)
+    except Exception as e:
+        print(f"[ERROR worker] Exception processing {vid}: {e}")
+        return None
 
 
 class BatchProcessor:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         base_dir = os.path.dirname(__file__)
-
         # абсолютные пути
         self.paths = {
             key: os.path.abspath(os.path.join(base_dir, rel))
@@ -30,8 +42,16 @@ class BatchProcessor:
         }
 
         ensure_dirs([self.paths["output_landmarks"], self.paths["output_visuals"]])
-        self.max_videos = cfg["max_videos"]
-        self.num_workers = cfg["num_workers"]
+        # параметры контроля нагрузки
+        self.max_videos = cfg.get("max_videos", 0) or 0  # 0 = no limit
+        self.num_workers = max(1, int(cfg.get("num_workers", 1)))
+        # ограничим воркеры разумно
+        try:
+            import multiprocessing
+            self.num_workers = min(self.num_workers, max(1, multiprocessing.cpu_count()))
+        except Exception:
+            pass
+        self.batch_size = int(cfg.get("batch_size", 50))
 
     def run(self):
         raw_dir = self.paths["raw_videos"]
@@ -40,65 +60,102 @@ class BatchProcessor:
         print(f"📂 RAW VIDEOS DIR: {raw_dir}")
         if not os.path.isdir(raw_dir):
             print(f"❌ Папка raw_videos не найдена: {raw_dir}")
-            return []
+            return {}
 
-        df = load_annotations(ann_path)
+        df_all = load_annotations(ann_path)
+        # Если задан лимит max_videos >0, можно применить позднее, после фильтрации существующих
+        # Список файлов в папке (без расширений)
         existing_videos = {os.path.splitext(f)[0] for f in os.listdir(raw_dir)}
-        df = df[df["attachment_id"].isin(existing_videos)]
+        # Фильтруем строки, у которых attachment_id есть в папке
+        df = df_all[df_all["attachment_id"].isin(existing_videos)].copy()
 
         print(f"[INFO] Найдено совпадений видео/аннотаций: {len(df)}")
         if len(df) == 0:
             print("❌ Нет совпадений — проверь имена файлов и CSV")
-            return []
+            return {}
 
-        print(f"[INFO] Пример строк аннотаций:")
-        print(df.head(3))
-
-        # Ограничим, если нужно
+        # Если задан max_videos (>0), ограничиваем количество после фильтрации
         if self.max_videos and len(df) > self.max_videos:
             df = df.head(self.max_videos)
-            print(f"[INFO] Обрабатываю первые {len(df)} совпадений")
+            print(f"[INFO] Обрабатываю первые {len(df)} совпадений (max_videos)")
 
-        # Подготавливаем задачи
-        tasks = []
-        for _, row in df.iterrows():
-            vid_name = f"{row['attachment_id']}.mp4"
-            vid = os.path.join(raw_dir, vid_name)
-            out = os.path.join(self.paths["output_landmarks"], f"{row['attachment_id']}.json")
-            tasks.append((vid, out, row["text"]))
+        # Подготавливаем list of tasks (generator-safe)
+        tasks = [
+            (os.path.join(raw_dir, f"{row['attachment_id']}.mp4"),
+             os.path.join(self.paths["output_landmarks"], f"{row['attachment_id']}.json"),
+             row["text"])
+            for _, row in df.iterrows()
+        ]
 
-        print(f"[INFO] Подготовлено задач: {len(tasks)}")
+        print(f"[INFO] Всего задач: {len(tasks)} — будем обрабатывать батчами по {self.batch_size}")
 
-        # Обработка видео
-        results = []
-        with ProcessPoolExecutor(max_workers=self.num_workers) as exec:
-            futures = [exec.submit(_process_video, vid, out, label, self.cfg)
-                       for vid, out, label in tasks]
+        processed_jsons = []  # пути к валидным json файлам
 
-            for f in tqdm(as_completed(futures), total=len(futures), desc="Обработка видео"):
-                try:
-                    res = f.result()
-                    if res:
-                        results.append(res)
-                except Exception as e:
-                    print(f"⚠️ Ошибка при обработке видео: {e}")
+        # Обрабатываем батчами, чтобы не держать слишком много задач в очереди
+        for i in range(0, len(tasks), self.batch_size):
+            batch = tasks[i:i + self.batch_size]
+            print(f"[INFO] Обработка батча {i//self.batch_size + 1} — задач: {len(batch)}")
 
-        print(f"✅ Обработано файлов: {len(results)}/{len(tasks)}")
+            # Запускаем пул для текущего батча
+            with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = [executor.submit(_process_video, vid, out, label, self.cfg) for vid, out, label in batch]
+                for fut in tqdm(as_completed(futures), total=len(futures), desc=f"Батч {i//self.batch_size + 1}"):
+                    try:
+                        res = fut.result(timeout=None)
+                        if res:
+                            processed_jsons.append(res)
+                    except Exception as e:
+                        print(f"[ERROR] Ошибка в батче: {e}")
 
-        # Формируем общий словарь: слово -> список json путей
-        gesture_dict = {}
-        for json_path in results:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                gesture = data["gesture"]
-                gesture_dict.setdefault(gesture, []).append(data["frames"])
+            # после завершения батча пусть ОС освободит память, цикл пойдёт дальше
+            print(f"[INFO] Батч {i//self.batch_size + 1} завершён. Промежуточно обработано: {len(processed_jsons)}")
+
+        print(f"[INFO] Всего успешно обработано json: {len(processed_jsons)}")
+
+        # ---------- Формируем итоговый JSON потоково ----------
+        # Собираем mapping label -> list of json paths (путьов, не в памяти кадры)
+        label_map = {}
+        for p in processed_jsons:
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                lbl = meta.get("gesture", "unknown")
+                label_map.setdefault(lbl, []).append(p)
+            except Exception as e:
+                print(f"[WARN] не удалось открыть {p}: {e}")
 
         dataset_path = os.path.join(self.paths["output_landmarks"], "gesture_dataset.json")
-        with open(dataset_path, "w", encoding="utf-8") as f:
-            json.dump(gesture_dict, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] Запись итогового словаря в потоковом режиме → {dataset_path}")
 
-        print(f"💾 Итоговый словарь сохранён: {dataset_path}")
-        return gesture_dict
+        # Пишем потоково: для каждого label читаем соответствующие json'ы по одному
+        try:
+            labels = list(label_map.items())
+            with open(dataset_path, "w", encoding="utf-8") as out:
+                out.write("{\n")
+                for idx, (label, paths) in enumerate(labels):
+                    out.write(json.dumps(label, ensure_ascii=False))
+                    out.write(": [")
+                    first_example = True
+                    for p in paths:
+                        try:
+                            with open(p, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                                frames = data.get("frames", [])
+                                if not first_example:
+                                    out.write(",")
+                                out.write(json.dumps(frames, ensure_ascii=False))
+                                first_example = False
+                        except Exception as e:
+                            print(f"[WARN] при добавлении {p} в итог: {e}")
+                    out.write("]")
+                    if idx != len(labels) - 1:
+                        out.write(",\n")
+                out.write("\n}\n")
+            print(f"✅ Итоговый словарь сохранён: {dataset_path}")
+        except Exception as e:
+            print(f"[ERROR] Не удалось записать итоговый словарь: {e}")
+
+        return label_map
 
 
 if __name__ == "__main__":
