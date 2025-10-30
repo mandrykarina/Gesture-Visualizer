@@ -1,17 +1,18 @@
 # Параметры обработки
-frame_interval_ms: 100 # Интервал между кадрами (мс) — 200мс для снижения нагрузки
-min_detection_confidence: 0.5 # Порог уверенности детекции
-min_tracking_confidence: 0.5 # Порог уверенности трекинга
+frame_interval_ms: 16
+min_detection_confidence: 0.5
+min_tracking_confidence: 0.5
 
-# Ограничение количества видео для теста
-max_videos: 5
+# Ограничение количества видео для теста (0 = без ограничения)
+max_videos: 0
 
-# Параллелизм
-num_workers: 2
+# Параллелизм и батчи
+num_workers: 2 # рекомендуем 1-2 при ограниченной памяти
+batch_size: 50 # обрабатываем по 50 видео за раз
 
 # Пути
 paths:
   raw_videos: "data/raw_videos"
-  annotations: "data/annotations.csv" # ← ИСПОЛЬЗУЙТЕ ЭТОТ
+  annotations: "data/annotations.csv"
   output_landmarks: "output/landmarks"
   output_visuals: "output/visualizations"
