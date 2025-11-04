@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture File Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 900px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 0.95em;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        .section-title {
+            font-size: 1.3em;
+            color: #667eea;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f9f9ff;
+        }
+        
+        .upload-area:hover {
+            background: #f0f0ff;
+            border-color: #764ba2;
+        }
+        
+        .upload-area.dragover {
+            background: #e8e8ff;
+            border-color: #764ba2;
+            transform: scale(1.02);
+        }
+        
+        .upload-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+        
+        .upload-text {
+            font-size: 1.1em;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .upload-subtext {
+            font-size: 0.9em;
+            color: #999;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .form-group {
+            margin: 15px 0;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 0.95em;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-upload {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-upload:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-refresh {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .btn-refresh:hover {
+            background: #e0e0e0;
+        }
+        
+        .status {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.95em;
+            display: none;
+        }
+        
+        .status.success {
+            display: block;
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            display: block;
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.loading {
+            display: block;
+            background: #e2e3e5;
+            color: #383d41;
+            border: 1px solid #d6d8db;
+        }
+        
+        .files-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        
+        .files-table thead {
+            background: #f9f9ff;
+        }
+        
+        .files-table th {
+            padding: 15px;
+            text-align: left;
+            color: #667eea;
+            font-weight: 600;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .files-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .files-table tr:hover {
+            background: #f9f9ff;
+        }
+        
+        .file-name {
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .s3-path {
+            color: #667eea;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
+        
+        .empty-message {
+            text-align: center;
+            color: #999;
+            padding: 30px;
+            font-size: 1.1em;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📁 Gesture File Manager</h1>
+        <p class="subtitle">Загружай файлы в MinIO и отслеживай их в БД</p>
+        
+        <div class="section">
+            <div class="section-title">📤 Загрузить файл</div>
+            
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">⬆️</div>
+                <div class="upload-text">Перетащи файл сюда или нажми</div>
+                <div class="upload-subtext">Поддерживаются все форматы файлов</div>
+            </div>
+            
+            <input type="file" id="fileInput" />
+            
+            <div class="form-group">
+                <label for="gestureInput">Название жеста (опционально):</label>
+                <input type="text" id="gestureInput" placeholder="Например: wave, thumbs_up, peace" />
+            </div>
+            
+            <div class="button-group">
+                <button class="btn-upload" id="uploadBtn">Загрузить файл</button>
+                <button class="btn-refresh" id="refreshBtn">Обновить список</button>
+            </div>
+            
+            <div class="status" id="uploadStatus"></div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">📋 Загруженные файлы</div>
+            
+            <table class="files-table" id="filesTable">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Имя файла</th>
+                        <th>Путь в S3</th>
+                    </tr>
+                </thead>
+                <tbody id="filesTableBody">
+                    <tr>
+                        <td colspan="3" class="empty-message">
+                            <span class="loading-spinner"></span>
+                            Загрузка файлов...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://127.0.0.1:8000';
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const statusDiv = document.getElementById('uploadStatus');
+        const filesTableBody = document.getElementById('filesTableBody');
+        const gestureInput = document.getElementById('gestureInput');
+        
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+            }
+        });
+        
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadBtn.textContent = `Загрузить: ${e.target.files[0].name}`;
+            }
+        });
+        
+        // Upload file
+        uploadBtn.addEventListener('click', async () => {
+            if (!fileInput.files.length) {
+                showStatus('Выбери файл!', 'error');
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const gesture = gestureInput.value || 'default';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('gesture', gesture);
+            
+            showStatus('Загрузка...', 'loading');
+            uploadBtn.disabled = true;
+            
+            try {
+                const response = await fetch(`${API_URL}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus(`✅ Файл успешно загружен: ${data.file}`, 'success');
+                    fileInput.value = '';
+                    gestureInput.value = '';
+                    uploadBtn.textContent = 'Загрузить файл';
+                    await loadFiles();
+                } else {
+                    const error = await response.json();
+                    showStatus(`❌ Ошибка: ${error.detail}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`❌ Ошибка сети: ${error.message}`, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        });
+        
+        // Refresh files
+        refreshBtn.addEventListener('click', loadFiles);
+        
+        // Load files from database
+        async function loadFiles() {
+            try {
+                const response = await fetch(`${API_URL}/files`);
+                
+                if (!response.ok) {
+                    throw new Error('Не удалось загрузить список файлов');
+                }
+                
+                const files = await response.json();
+                
+                if (files.length === 0) {
+                    filesTableBody.innerHTML = `
+                        <tr>
+                            <td colspan="3" class="empty-message">
+                                📭 Файлов не найдено. Загрузи первый файл!
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+                
+                filesTableBody.innerHTML = files.map((file, index) => `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td><span class="file-name">${escapeHtml(file.filename)}</span></td>
+                        <td><span class="s3-path">${escapeHtml(file.s3_path)}</span></td>
+                    </tr>
+                `).join('');
+                
+            } catch (error) {
+                filesTableBody.innerHTML = `
+                    <tr>
+                        <td colspan="3" class="empty-message">
+                            ❌ Ошибка загрузки: ${error.message}
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+        
+        function showStatus(message, type) {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.className = 'status';
+                }, 5000);
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Load files on page load
+        loadFiles();
+    </script>
+</body>
+</html>
