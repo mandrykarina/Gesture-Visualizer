@@ -1,12 +1,10 @@
 import os
 import io
-from urllib.parse import quote_plus
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from minio import Minio
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, select
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
 
 load_dotenv(encoding='utf-8')
@@ -21,105 +19,125 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MinIO
-minio_client = Minio(
-    os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-    access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-    secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-    secure=False
-)
-
-bucket_name = os.getenv("MINIO_BUCKET", "gesture-files")
+# ======== MinIO ========
 try:
+    minio_client = Minio(
+        os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+        secure=False
+    )
+    
+    bucket_name = os.getenv("MINIO_BUCKET", "gesture-files")
     if not minio_client.bucket_exists(bucket_name):
         minio_client.make_bucket(bucket_name)
     print("[OK] MinIO connected")
 except Exception as e:
-    print(f"[WARN] MinIO: {e}")
+    print(f"[ERROR] MinIO failed: {e}")
+    minio_client = None
 
-# PostgreSQL
-user = os.getenv("POSTGRES_USER", "testuser")
-password = os.getenv("POSTGRES_PASSWORD", "testpass123")
-host = os.getenv("POSTGRES_HOST", "localhost")
-port = os.getenv("POSTGRES_PORT", "5432")
-db = os.getenv("POSTGRES_DB", "testdb")
+# ======== SQLite ========
+DATABASE_URL = "sqlite:///./gesture.db"
 
-DATABASE_URL = f"postgresql+asyncpg://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{db}"
-
-engine = create_async_engine(
-    DATABASE_URL, 
-    echo=False,
-    pool_size=5,
-    max_overflow=10
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
 )
 
-AsyncSessionLocal = sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
 class FileRecord(Base):
     __tablename__ = "files"
-    id: int = Column(Integer, primary_key=True)
-    filename: str = Column(String, nullable=False)
-    s3_path: str = Column(String, nullable=False)
+    
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, nullable=False)
+    s3_path = Column(String, nullable=False)
 
-# Инициализация таблиц - БЕЗ автоматического создания
-async def init_db():
-    """Должна быть вызвана один раз вручную если таблицы не созданы"""
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print("[OK] Database initialized")
-    except Exception as e:
-        print(f"[WARN] Database init: {e}")
+Base.metadata.create_all(bind=engine)
+print("[OK] SQLite database initialized")
 
+# ======== API ========
 @app.get("/")
 def root():
-    return {"message": "API работает"}
+    return {
+        "message": "API работает!",
+        "minio": "OK" if minio_client else "OFFLINE",
+        "database": "SQLite OK"
+    }
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
+        if not minio_client:
+            raise HTTPException(status_code=503, detail="MinIO offline")
+        
+        print(f"[INFO] Uploading: {file.filename}")
+        
+        # Читай файл
         content = await file.read()
+        file_size = len(content)
+        print(f"[INFO] File size: {file_size} bytes")
+        
+        # Загружай в MinIO
         s3_key = file.filename
-
+        print(f"[INFO] Uploading to MinIO: {s3_key}")
+        
         minio_client.put_object(
             bucket_name,
             s3_key,
             io.BytesIO(content),
-            length=len(content),
+            length=file_size,
             content_type=file.content_type or "application/octet-stream"
         )
+        print(f"[OK] MinIO upload complete")
 
-        async with AsyncSessionLocal() as session:
+        # Сохрани в SQLite
+        db = SessionLocal()
+        try:
             s3_path = f"s3://{bucket_name}/{s3_key}"
             db_file = FileRecord(filename=file.filename, s3_path=s3_path)
-            session.add(db_file)
-            await session.commit()
+            db.add(db_file)
+            db.commit()
+            db.refresh(db_file)
+            print(f"[OK] Database saved: {db_file.id}")
+        finally:
+            db.close()
 
-        return {"status": "ok", "file": file.filename, "path": s3_path}
+        return {
+            "status": "ok",
+            "file": file.filename,
+            "size": file_size,
+            "path": s3_path
+        }
+    
     except Exception as e:
-        print(f"[ERROR] Upload: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[ERROR] Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 @app.get("/files")
-async def list_files():
+def list_files():
     try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(FileRecord))
-            files = result.scalars().all()
+        db = SessionLocal()
+        try:
+            files = db.query(FileRecord).all()
+            print(f"[INFO] Found {len(files)} files")
             return [
                 {"id": f.id, "filename": f.filename, "s3_path": f.s3_path}
                 for f in files
             ]
+        finally:
+            db.close()
     except Exception as e:
-        print(f"[ERROR] List files: {e}")
+        print(f"[ERROR] List files failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/init-db")
-async def init_database():
-    """Вручную создай таблицы при первом запуске"""
-    await init_db()
-    return {"status": "ok", "message": "Database initialized"}
+@app.get("/health")
+def health():
+    """Проверка здоровья API"""
+    return {
+        "status": "ok",
+        "minio": "connected" if minio_client else "offline",
+        "database": "ok"
+    }
