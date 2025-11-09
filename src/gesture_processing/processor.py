@@ -8,11 +8,7 @@ from .utils import load_annotations, ensure_dirs
 
 
 def _process_video(vid, out, label, cfg):
-    """
-    Выполняется в дочернем процессе.
-    Создаёт собственный GestureLandmarkExtractor, чтобы избежать pickle проблем
-    и уменьшить sharing-ресурсов между процессами.
-    """
+    """Выполняется в дочернем процессе. Создаёт свой экземпляр медиапайпа."""
     try:
         from .extractor import GestureLandmarkExtractor
     except Exception as e:
@@ -72,23 +68,30 @@ class BatchProcessor:
             df = df.head(self.max_videos)
             print(f"[INFO] Обрабатываю первые {len(df)} совпадений (max_videos)")
 
-        # Формируем задачи
+        # --- формируем задачи (видео, путь json, слово) ---
         tasks = [
             (os.path.join(raw_dir, f"{row['attachment_id']}.mp4"),
              os.path.join(self.paths["output_landmarks"], f"{row['attachment_id']}.json"),
-             row["text"])
+             str(row["text"]).strip().lower())
             for _, row in df.iterrows()
         ]
 
-        # 💡 Пропускаем, если JSON уже существует
-        before = len(tasks)
-        tasks = [t for t in tasks if not os.path.exists(t[1])]
-        skipped = before - len(tasks)
-        print(f"[INFO] Уже обработано (пропущено): {skipped}")
-        print(f"[INFO] К обработке новых видео: {len(tasks)}")
+        # --- фильтрация по уникальным словам + проверка существующего файла ---
+        seen_words = set()
+        filtered_tasks = []
+        for vid, out, label in tasks:
+            if label not in seen_words and not os.path.exists(out):
+                seen_words.add(label)
+                filtered_tasks.append((vid, out, label))
+        skipped = len(tasks) - len(filtered_tasks)
+
+        tasks = filtered_tasks
+        print(f"[INFO] Пропущено (повторы слов или уже обработанные): {skipped}")
+        print(f"[INFO] К обработке уникальных слов: {len(tasks)}")
 
         processed_jsons = []
 
+        # --- обработка батчами ---
         for i in range(0, len(tasks), self.batch_size):
             batch = tasks[i:i + self.batch_size]
             print(f"[INFO] Обработка батча {i//self.batch_size + 1} — задач: {len(batch)}")
@@ -107,7 +110,7 @@ class BatchProcessor:
 
         print(f"[INFO] Всего успешно обработано json: {len(processed_jsons)}")
 
-        # ---------- Итоговый JSON ----------
+        # --- сборка итогового словаря ---
         label_map = {}
         for p in processed_jsons:
             try:
@@ -119,7 +122,7 @@ class BatchProcessor:
                 print(f"[WARN] не удалось открыть {p}: {e}")
 
         dataset_path = os.path.join(self.paths["output_landmarks"], "gesture_dataset.json")
-        print(f"[INFO] Запись итогового словаря в потоковом режиме → {dataset_path}")
+        print(f"[INFO] Запись итогового словаря → {dataset_path}")
 
         try:
             labels = list(label_map.items())
